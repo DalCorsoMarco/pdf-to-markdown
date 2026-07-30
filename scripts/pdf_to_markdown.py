@@ -173,8 +173,17 @@ KNOWN_NOCOLON_LABELS = [
 KNOWN_NOCOLON_LABELS.sort(key=len, reverse=True)  # match longest first
 
 
+BOLD_FLAG = 1 << 4  # PyMuPDF span "flags" bit for bold, per its font-flags bitfield
+BOLD_NAME_RE = re.compile(r"bold|black|heavy", re.IGNORECASE)
+
+
+def _span_is_bold(span):
+    return bool(span["flags"] & BOLD_FLAG) or bool(BOLD_NAME_RE.search(span.get("font", "")))
+
+
 def extract_lines(page):
-    """Flatten a page into individual text lines, each with its own bbox and font size."""
+    """Flatten a page into individual text lines, each with its own bbox,
+    font size, and whether it's (mostly) bold."""
     lines = []
     for b in page.get_text("dict")["blocks"]:
         if b.get("type") != 0:
@@ -184,10 +193,17 @@ def extract_lines(page):
             if not text:
                 continue
             size = max((span["size"] for span in line["spans"]), default=0.0)
+            # A line counts as bold if most of its *characters* are bold, not
+            # just any single span -- one bolded word inside an otherwise
+            # plain sentence shouldn't flip the whole line.
+            total_chars = sum(len(span["text"]) for span in line["spans"])
+            bold_chars = sum(len(span["text"]) for span in line["spans"] if _span_is_bold(span))
+            is_bold = total_chars > 0 and bold_chars / total_chars > 0.5
             lines.append({
                 "bbox": line["bbox"],
                 "text": text,
                 "font_size": round(size, 1),
+                "bold": is_bold,
             })
     return lines
 
@@ -239,7 +255,10 @@ def ocr_extract_lines(page, dpi=OCR_DPI):
         # compute_heading_levels' assumption of a few sizes that recur
         # exactly. Whole points collapse that jitter back into a small,
         # usable set of tiers.
-        lines.append({"bbox": (x0, y0, x1, y1), "text": text, "font_size": round(avg_height)})
+        # OCR gives no reliable font-weight signal, so every OCR'd line is
+        # "bold": False -- the bold-based heading boost in
+        # classify_heading_level only ever applies to a real text layer.
+        lines.append({"bbox": (x0, y0, x1, y1), "text": text, "font_size": round(avg_height), "bold": False})
     return lines
 
 
@@ -312,6 +331,32 @@ def compute_heading_levels(all_lines, body_size):
     by_frequency = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
     selected = sorted((size for size, _ in by_frequency[:MAX_HEADING_LEVELS]), reverse=True)
     return {size: i + 1 for i, size in enumerate(selected)}
+
+
+BOLD_HEADING_MAX_CHARS = 80  # a bold *label* is heading-length; a bold
+                              # *paragraph* someone emphasized for emphasis's
+                              # sake is not -- length is what tells them apart
+
+
+def classify_heading_level(line, size_to_level, body_size):
+    """Decide a line's heading level from its font size primarily, falling
+    back to boldness for lines that are styled as a heading (bold, no
+    smaller than body text, and heading-length) without a distinct size of
+    their own -- common in real PDFs where a feature name is bold but not
+    enlarged. Returns None for body text. Bold-only headings always land one
+    level deeper than any size-based tier, since a same-size-as-body bold
+    label is the least visually distinct heading style a document is likely
+    to use."""
+    level = size_to_level.get(line["font_size"])
+    if level:
+        return level
+    if (
+        line["bold"]
+        and line["font_size"] >= body_size
+        and len(line["text"]) <= BOLD_HEADING_MAX_CHARS
+    ):
+        return max(size_to_level.values(), default=0) + 1
+    return None
 
 
 def match_label_line(line):
@@ -483,7 +528,7 @@ def process_body_flow(texts, out):
     flush_paragraph(para_buf, out)
 
 
-def convert_lines_to_markdown(lines, page_width, size_to_level):
+def convert_lines_to_markdown(lines, page_width, size_to_level, body_size):
     """Turn one page's already-extracted lines into its share of markdown
     chunks. Pure data in, pure data out -- no fitz object involved -- so this
     can run in a worker process for --jobs > 1."""
@@ -494,7 +539,7 @@ def convert_lines_to_markdown(lines, page_width, size_to_level):
         col_sorted = sorted(col, key=lambda l: l["bbox"][1])
         body_run = []
         for line in col_sorted:
-            level = size_to_level.get(line["font_size"])
+            level = classify_heading_level(line, size_to_level, body_size)
             if level:
                 process_body_flow(body_run, out)
                 body_run = []
@@ -529,13 +574,13 @@ def _extract_all_parallel(pdf_path, page_count, jobs, use_ocr=True):
 
 
 def _convert_page_worker(args):
-    lines, width, size_to_level = args
-    return convert_lines_to_markdown(lines, width, size_to_level)
+    lines, width, size_to_level, body_size = args
+    return convert_lines_to_markdown(lines, width, size_to_level, body_size)
 
 
-def _convert_all_parallel(page_data, size_to_level, jobs):
+def _convert_all_parallel(page_data, size_to_level, body_size, jobs):
     jobs = max(1, min(jobs, len(page_data)))
-    args = [(lines, width, size_to_level) for lines, width in page_data]
+    args = [(lines, width, size_to_level, body_size) for lines, width in page_data]
     with ProcessPoolExecutor(max_workers=jobs) as ex:
         return list(ex.map(_convert_page_worker, args))
 
@@ -639,10 +684,10 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
     size_to_level = compute_heading_levels(all_lines, body_size)
 
     if parallel:
-        per_page_chunks = _convert_all_parallel(page_data, size_to_level, jobs)
+        per_page_chunks = _convert_all_parallel(page_data, size_to_level, body_size, jobs)
     else:
         per_page_chunks = [
-            convert_lines_to_markdown(lines, width, size_to_level)
+            convert_lines_to_markdown(lines, width, size_to_level, body_size)
             for lines, width in page_data
         ]
 

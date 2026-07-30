@@ -190,6 +190,16 @@ fuses a heading line together with the paragraph text right next to it, and
 classifying block-by-block would have inherited the wrong size for one of
 them.
 
+Size isn't the only signal, either: on a real text layer (not OCR), a line
+that's bold, no smaller than body text, and heading-length also counts as a
+heading -- one level deeper than any size-based tier. This catches the
+common case of a feature/section name styled bold *without* being enlarged,
+which pure size-based detection would otherwise fold into the surrounding
+paragraph. It only fires on genuine PDF font metadata (the bold flag PyMuPDF
+reports per span, with a font-name check as a fallback for PDFs that don't
+set the flag correctly), never on OCR'd pages -- Tesseract doesn't give a
+reliable font-weight signal, so OCR'd lines are never treated as bold.
+
 **Label lines** (`Skill Proficiencies: Persuasion, Insight`) become
 `**Label:** value`. This works generally for anything with a literal colon.
 Some 5e homebrew templates render certain fields (Languages, Equipment,
