@@ -1,6 +1,6 @@
 ---
 name: pdf-to-markdown
-description: Converts visually rich, multi-column PDFs (D&D/TTRPG manuals, homebrew sourcebooks, Homebrewery-style sheets, and similar layouts) into a single clean Markdown file, using ONLY a deterministic Python script plus local OCR for scanned pages -- no model reasoning, no reading pages as images, no token cost beyond running the command. IMPORTANT: use this proactively any time you are about to read a PDF file with the Read tool for a document that plausibly matches this style (D&D/TTRPG content, multi-column homebrew layout, or a scanned manual), even if the user only asked a question about the PDF's contents rather than asking for a conversion by name -- reading a PDF directly renders every page as an image and burns far more tokens than running this script once and reading the resulting text file. Check first whether a same-named .md file already sits next to the PDF from a previous run before reconverting. Text only: images in the source PDF are never embedded or referenced in the output -- pages with no real text layer (scanned pages) are OCR'd locally via Tesseract instead. If the user instead wants images preserved, or wants the best possible fidelity on a document too irregular for a heuristic script (very unusual layouts, sidebars, non-Homebrewery templates), fall back to reading the PDF's pages directly and transcribing it by hand instead of relying on this skill's script.
+description: Converts visually rich, multi-column PDFs (manuals, sourcebooks, structured reference documents, and similar layouts) into a single clean Markdown file, using ONLY a deterministic Python script plus local OCR for scanned pages -- no model reasoning, no reading pages as images, no token cost beyond running the command. IMPORTANT: use this proactively any time you are about to read a PDF file with the Read tool for a document that plausibly matches this style (multi-column layout with headings and reference tables, or a scanned manual), even if the user only asked a question about the PDF's contents rather than asking for a conversion by name -- reading a PDF directly renders every page as an image and burns far more tokens than running this script once and reading the resulting text file. Check first whether a same-named .md file already sits next to the PDF from a previous run before reconverting. Text only: images in the source PDF are never embedded or referenced in the output -- pages with no real text layer (scanned pages) are OCR'd locally via Tesseract instead. If the user instead wants images preserved, or wants the best possible fidelity on a document too irregular for a heuristic script (very unusual layouts, sidebars, non-standard templates), fall back to reading the PDF's pages directly and transcribing it by hand instead of relying on this skill's script.
 ---
 
 # PDF to Markdown (script-only, zero token cost)
@@ -19,16 +19,17 @@ what it trades away:
   for those, see the OCR section below.
 - **Heuristics, not understanding.** Reading order, heading levels, and
   table detection all come from font size and text patterns, not from
-  actually comprehending the page. They're tuned against real Homebrewery /
-  5e homebrew layouts and hold up well there, but an unusual template can
-  still fool them. Skim the output against the source once before trusting
-  it fully -- this is a "verify, don't just trust" tool, the same as any
-  script you didn't write from scratch yourself.
+  actually comprehending the page. They're tuned against real multi-column
+  reference documents with numbered lists and label-style fields, and hold
+  up well there, but an unusual template can still fool them. Skim the
+  output against the source once before trusting it fully -- this is a
+  "verify, don't just trust" tool, the same as any script you didn't write
+  from scratch yourself.
 
 ## Before reading any matching PDF directly
 
 Reading a PDF with the Read tool renders every page as an image -- for a
-short 2-page homebrew sheet that alone runs tens of thousands of tokens once
+short 2-page document that alone runs tens of thousands of tokens once
 you factor in visually checking the layout, and it costs that again on every
 future turn that needs the same PDF. This skill's whole purpose is to pay
 that cost once, in code, so it never has to happen again: run
@@ -122,16 +123,16 @@ starts on in that same file:
 
 ```
 ## Contents
-- Baker (line 12)
-  - Feature: Baking insight (line 24)
-  - Suggested Characteristics (line 28)
+- Model X200 (line 12)
+  - Specifications (line 24)
+  - Maintenance Schedule (line 28)
 ```
 
 The point is to avoid reading a long manual end-to-end just to answer a
 question about one section. Read the Contents block first (it's tiny), find
 the heading you need, and jump straight to it with the Read tool's `offset`
-parameter (e.g. `offset: 24` to land right on "Feature: Baking insight")
-instead of reading the whole file from the top.
+parameter (e.g. `offset: 24` to land right on "Specifications") instead of
+reading the whole file from the top.
 
 ## Scanned pages: automatic OCR fallback
 
@@ -171,10 +172,11 @@ on a document you haven't run this on before.
 
 **Reading order**: text lines are grouped into left-to-right columns by
 their x-position, then read top-to-bottom within each column. This matches
-the common 1-2 column TTRPG layout well. A document with an unusual layout
-(a full-width callout box interrupting two columns, a 3-column spread, a
-sidebar) can come out in the wrong order -- the script has no way to notice
-this happened, so check a page like that yourself if the source has one.
+the common 1-2 column reference-document layout well. A document with an
+unusual layout (a full-width callout box interrupting two columns, a
+3-column spread, a sidebar) can come out in the wrong order -- the script
+has no way to notice this happened, so check a page like that yourself if
+the source has one.
 
 **Heading levels**: the script tallies every font size used in the document
 that's at least 20% bigger than body text, then ranks candidates by how
@@ -200,41 +202,42 @@ reports per span, with a font-name check as a fallback for PDFs that don't
 set the flag correctly), never on OCR'd pages -- Tesseract doesn't give a
 reliable font-weight signal, so OCR'd lines are never treated as bold.
 
-**Label lines** (`Skill Proficiencies: Persuasion, Insight`) become
+**Label lines** (`Category: Electronics, Appliances`) become
 `**Label:** value`. This works generally for anything with a literal colon.
-Some 5e homebrew templates render certain fields (Languages, Equipment,
-Senses, Saving Throws, etc.) in bold *without* a colon in the underlying
-text at all -- for those, the script matches against a small built-in list
-of common stat-block field names (see `KNOWN_NOCOLON_LABELS` in the script).
-A custom or unusual field name outside that list just stays plain paragraph
-text -- correct content, missing emphasis, never silently wrong.
+Some templates render certain fields (things like `Manufacturer`,
+`Warranty`, `Origin`, `Certification`) in bold *without* a colon in the
+underlying text at all -- for those, the script matches against a small
+built-in list of common field names (see `KNOWN_NOCOLON_LABELS` in the
+script). A custom or unusual field name outside that list just stays plain
+paragraph text -- correct content, missing emphasis, never silently wrong.
 
-**Roll / random tables** (`d8 Personality Trait` followed by `1 ...`,
-`2 ...`, etc.) become a two-column Markdown table.
+**Numbered reference tables** (a short header line like `d8 Common Causes`
+followed by `1 ...`, `2 ...`, etc.) become a two-column Markdown table.
 
-**Class/level spell tables** (`Cleric Level Spells` followed by `1st sleep,
-cause fear`, `3rd darkness, moonbeam`, etc.) become a table the same way.
-This shape is easy to confuse with a genuinely multi-column class
-progression table (`Fighter Level Spells Known Spell Slots Slot Level`),
-which this script deliberately does *not* try to tabulate -- forcing four
-numeric columns into two would misrepresent the data. The two are told
-apart by looking at the row content, not the header: a real spell list is
-prose (comma-separated spell names), a progression table's rows are just a
-few short numbers, so the header only commits to building a table once the
-first row confirms it looks like prose (see `row_looks_like_prose` in the
-script). When it doesn't pan out, the header line is left as an ordinary
-paragraph instead of guessed at.
+**Level-indexed reference tables** (`Membership Level Perks` followed by
+`1st free shipping, priority support`, `3rd dedicated account manager,
+early access`, etc.) become a table the same way. This shape is easy to
+confuse with a genuinely multi-column progression table (`Employee Level
+Base Salary Bonus Percent Vacation Days`), which this script deliberately
+does *not* try to tabulate -- forcing four numeric columns into two would
+misrepresent the data. The two are told apart by looking at the row
+content, not the header: a real level-indexed list is prose
+(comma-separated entries), a progression table's rows are just a few short
+numbers, so the header only commits to building a table once the first row
+confirms it looks like prose (see `row_looks_like_prose` in the script).
+When it doesn't pan out, the header line is left as an ordinary paragraph
+instead of guessed at.
 
 Both table kinds handle rows wrapping across more than one extra source
 line, and know to stop rather than absorbing whatever comes next: a second
-non-row line starting with an all-caps word or run (`EYES OF TWILIGHT
-Starting at 6th level...`) is treated as the start of new content, not a
-continuation -- exactly the "bold/small-caps feature name" pattern this
-document family constantly reuses for subsection titles, which is also
-useful on OCR'd pages where that subheading's recognized size sometimes
-doesn't clear the heading threshold either. If you add support for a new
-document family with different table or heading conventions, this is the
-piece most likely to need a new pattern.
+non-row line starting with an all-caps word or run (`WARRANTY TERMS
+Coverage begins on the date of purchase...`) is treated as the start of new
+content, not a continuation -- exactly the "bold/small-caps section name"
+pattern this kind of document constantly reuses for subsection titles,
+which is also useful on OCR'd pages where that subheading's recognized size
+sometimes doesn't clear the heading threshold either. If you add support
+for a new document family with different table or heading conventions,
+this is the piece most likely to need a new pattern.
 
 ## When this isn't the right call
 

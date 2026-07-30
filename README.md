@@ -19,6 +19,37 @@ recognizes common structured patterns (numbered reference tables,
 label/value lines), and writes it all out as one Markdown file — for the
 cost of running Python, not tokens.
 
+## Performance
+
+Measured on two real-world test documents — a couple of data points, not a
+rigorous multi-trial benchmark, so treat this as illustrative rather than a
+guaranteed ratio:
+
+| Document | Reads the PDF directly (no skill) | Uses this skill |
+|---|---|---|
+| 2-page document | ~52,000 tokens / ~193s | ~35,000 tokens / ~30s |
+| 20-page document (sample) | ~88,800 tokens / ~436s (~7.3 min) | ~49,200 tokens / ~82s |
+
+A few things worth knowing about these numbers:
+
+- **The gap widens on longer documents**, as expected: ~1.4x more tokens
+  without the skill on the 2-page document, ~1.8x more on the 20-page one.
+  The script's own cost stays close to zero regardless of page count;
+  reading a PDF directly scales with it, since every additional page is
+  another image to render and read.
+- **Most of the "with skill" token count isn't PDF analysis at all** — it's
+  the ordinary overhead of running any agent (reading `SKILL.md`, reporting
+  the result back). The conversion itself runs in Python and costs 0
+  tokens; the numbers above are largely fixed overhead, not something that
+  scales with the document.
+- **These numbers came from a fresh, isolated test agent** spun up
+  specifically to measure this. Used within an ongoing session instead
+  (the normal way), the "with skill" side would be lower still, since that
+  fixed overhead is already paid for by the session itself.
+- **The 20-page run is a sample from a larger document**, not necessarily
+  representative of every document's density of images, columns, or tables
+  — actual results will vary by document.
+
 ## Features
 
 - **Column-aware reading order** — text lines are clustered into
@@ -30,20 +61,20 @@ cost of running Python, not tokens.
   most often relative to the document's own body text size, plus a
   same-size bold line (e.g. a bold feature name that was never enlarged) —
   common in real PDFs, and something size alone would miss.
-- **"Label: value" lines** (`Skill Proficiencies: Persuasion, Insight`)
-  become `**Label:** value`, including for a handful of common field names
-  that some templates render without a colon at all (`Languages`,
-  `Equipment`, etc.) — see `KNOWN_NOCOLON_LABELS` in the script if you want
+- **"Label: value" lines** (`Category: Electronics, Appliances`) become
+  `**Label:** value`, including for a handful of common field names that
+  some templates render without a colon at all (`Manufacturer`,
+  `Warranty`, etc.) — see `KNOWN_NOCOLON_LABELS` in the script if you want
   to extend this list for a different document family.
-- **Numbered/lettered reference tables** (`d8 Personality Trait` + numbered
-  entries) and **level-indexed reference tables** (`Cleric Level Spells` +
-  `1st sleep, cause fear`, `3rd ...`) both become real 2-column Markdown
-  tables. Rows wrapping across multiple source lines get rejoined
-  correctly, and a table knows to stop rather than absorb whatever comes
-  after it (a new all-caps subsection title ends it, not just a heading or
-  a new table). Multi-column numeric progression tables are deliberately
-  left as prose rather than guessed at, since getting that wrong would
-  misrepresent the data.
+- **Numbered/lettered reference tables** (`d8 Common Causes` + numbered
+  entries) and **level-indexed reference tables** (`Membership Level
+  Perks` + `1st free shipping, priority support`, `3rd ...`) both become
+  real 2-column Markdown tables. Rows wrapping across multiple source
+  lines get rejoined correctly, and a table knows to stop rather than
+  absorb whatever comes after it (a new all-caps subsection title ends it,
+  not just a heading or a new table). Multi-column numeric progression
+  tables are deliberately left as prose rather than guessed at, since
+  getting that wrong would misrepresent the data.
 - **Contents block** — every output starts with a table of contents listing
   every heading and the exact line number it starts on, so a long document
   can be navigated without reading it end to end.
@@ -201,20 +232,20 @@ converted_at: 2026-07-29T21:33:03
 ---
 
 ## Contents
-- Baker (line 12)
-  - Feature: Baking insight (line 24)
-  - Suggested Characteristics (line 28)
+- Model X200 (line 12)
+  - Specifications (line 24)
+  - Maintenance Schedule (line 28)
 
-# Baker
+# Model X200
 
-You have spent your life practicing and perfecting the art of baking...
+This is the reference manual for the Model X200 unit...
 
-**Skill Proficiencies:** Persuasion, Insight
+**Manufacturer:** Acme Corp, Beta Industries
 ...
 
-| d8 | Personality Trait |
+| d8 | Common Causes |
 |---|---|
-| 1 | I am very meticulous about my work and pay attention to detail. |
+| 1 | Worn drive belt or misaligned pulley. |
 ...
 ```
 
@@ -234,6 +265,14 @@ You have spent your life practicing and perfecting the art of baking...
 - **OCR is a proxy, not a substitute for real text.** Font-size-based
   heading detection is less reliable on OCR'd pages, since it relies on
   recognized glyph height rather than actual font metadata.
+- **A "real" text layer can still come out garbled.** Some PDFs embed a
+  decorative or custom font whose glyph-to-Unicode mapping is broken or
+  non-standard in the file itself — PyMuPDF (and any other text-extraction
+  library) then pulls out the wrong characters even though a text layer
+  genuinely exists, no OCR involved. This is rare, affects only the
+  specific text styled with that font, and isn't something this script can
+  detect or work around; if a section of the output looks like garbage
+  characters, check it against the source PDF directly.
 
 See `SKILL.md` for the full design rationale and how Claude Code uses this
 skill.

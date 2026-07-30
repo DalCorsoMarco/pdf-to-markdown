@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Deterministic PDF -> Markdown converter for visually rich, multi-column
-documents (TTRPG/D&D homebrew sheets, Homebrewery-style sourcebooks, and
+documents (manuals, sourcebooks, structured reference documents, and
 similar layouts).
 
 This is a pure, self-contained script: no model/LLM is involved in reading
@@ -15,8 +15,8 @@ per-line font size, position, and text patterns alone. That trade-off means:
     instead (see below) -- but a normal page's own illustrations are always
     just skipped, OCR or not.
   - Heading levels, tables, and label lines are detected with heuristics
-    tuned against real-world Homebrewery/5e homebrew layouts. Unusual
-    templates (unlabeled sidebars, 3+ column layouts, unconventional random
+    tuned against real-world multi-column reference documents. Unusual
+    templates (unlabeled sidebars, 3+ column layouts, unconventional
     tables) may not be recognized correctly -- always skim the output
     against the source before trusting it fully.
 
@@ -115,13 +115,13 @@ COLUMN_GAP_RATIO = 0.08        # x-gap (relative to page width) that splits
 TABLE_HEADER_RE = re.compile(r"^d(\d{1,3})\s+(.+)$")
 TABLE_ROW_RE = re.compile(r"^(\d{1,3})\s+(.+)$")
 
-# "Cleric Level Spells", "Druid Level Circle Spells", "Paladin Level Spells"
-# -- the other common D&D table shape, pairing a class/level column with a
-# short one-word-ish category. Deliberately NOT used for multi-column class
-# progression tables (e.g. "Fighter Level Spells Known Spell Slots Slot
-# Level"), which happen to match this same header shape but need real
-# multi-column parsing this script doesn't attempt -- see
-# ROW_LOOKS_LIKE_PROSE_RE below for how those get told apart.
+# "Membership Level Perks", "Employee Level Benefits" -- the other common
+# reference-table shape, pairing a level/tier column with a short
+# one-word-ish category. Deliberately NOT used for multi-column progression
+# tables (e.g. "Employee Level Base Salary Bonus Percent Vacation Days"),
+# which happen to match this same header shape but need real multi-column
+# parsing this script doesn't attempt -- see ROW_LOOKS_LIKE_PROSE_RE below
+# for how those get told apart.
 LEVEL_TABLE_HEADER_RE = re.compile(r"^([A-Za-z][A-Za-z ]{1,30}?)\s+(?:Level|LEVEL)\s+([A-Za-z][A-Za-z ]{1,30})$")
 ORDINAL_ROW_RE = re.compile(r"^(\d{1,2}(?:st|nd|rd|th))\s+(.+)$", re.IGNORECASE)
 
@@ -158,12 +158,12 @@ FRONT_MATTER_CRC_RE = re.compile(r"^source_crc32:\s*([0-9a-fA-F]+)\s*$", re.MULT
 # rather than a full sentence that happens to contain a colon.
 LABEL_COLON_RE = re.compile(r"^([A-Z][A-Za-z0-9 /'\-]{1,40}):\s*(.+)$")
 
-# Common D&D 5e stat-block / background-sheet field names that templates
-# often render WITHOUT a trailing colon (styled as bold labels visually,
-# but with no colon character in the underlying text at all). This list is
-# a pragmatic heuristic for the TTRPG domain this script targets -- custom
-# or unusual field names outside this list simply won't get bolded, which
-# is a safe (if less polished) fallback, not a wrong answer.
+# Common reference-document field names that templates often render
+# WITHOUT a trailing colon (styled as bold labels visually, but with no
+# colon character in the underlying text at all). This list is a pragmatic
+# heuristic, extendable for other document families -- custom or unusual
+# field names outside this list simply won't get bolded, which is a safe
+# (if less polished) fallback, not a wrong answer.
 KNOWN_NOCOLON_LABELS = [
     "Skill Proficiencies", "Tool Proficiencies", "Languages", "Equipment",
     "Saving Throws", "Skills", "Senses", "Damage Resistances",
