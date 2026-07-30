@@ -58,6 +58,7 @@ skip even trying.
 Usage:
     python3 pdf_to_markdown.py <input.pdf> [output.md] [--force] [--jobs N] [--no-ocr]
     python3 pdf_to_markdown.py <folder> [output_folder] [--recursive] [--force] [--jobs N] [--no-ocr]
+    python3 pdf_to_markdown.py --list-cache <folder> [--recursive]
 
 Single-file mode: if output.md is omitted, it is written next to the input
 PDF using the same base name (e.g. manual.pdf -> manual.md).
@@ -67,6 +68,17 @@ converts every .pdf found directly inside it. Without output_folder, each
 .md is written next to its source PDF; with it, outputs go there instead,
 mirroring the subfolder structure. Add --recursive to also descend into
 subfolders.
+
+Both modes print progress as they run -- which page is being extracted,
+which is being converted, then a final "Wrote: ..." per file -- instead of
+producing no output until the whole run finishes; useful both at a
+terminal and for an agent running this script, so a long batch's progress
+is visible rather than silent.
+
+--list-cache <folder> [--recursive]: reports every .md in <folder> that
+carries this script's front matter (see build_document) -- its source PDF,
+page count, and conversion timestamp -- plus whether it's still up to date
+with that PDF's current CRC32. Pure lookup, no conversion happens.
 
 --jobs N (default 1, i.e. single-process/sequential): splits work across N
 worker processes instead of handling it one piece at a time. Real
@@ -165,7 +177,10 @@ def looks_like_new_content(text):
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
-FRONT_MATTER_CRC_RE = re.compile(r"^source_crc32:\s*([0-9a-fA-F]+)\s*$", re.MULTILINE)
+# Matches any "key: value" line in the YAML front matter -- used to read it
+# back generically (source_pdf, source_crc32, source_pages, converted_at)
+# rather than one regex per field.
+FRONT_MATTER_FIELD_RE = re.compile(r"^([a-z0-9_]+):\s*(.*?)\s*$", re.MULTILINE)
 
 # Marks which source PDF page the chunks right after it came from. An HTML
 # comment so it's invisible in a rendered preview but still greppable in the
@@ -585,10 +600,17 @@ def _extract_all_parallel(ex, pdf_path, page_count, jobs, use_ocr=True):
         (pdf_path, start, min(start + chunk_size, page_count), use_ocr)
         for start in range(0, page_count, chunk_size)
     ]
-    page_data = []
-    for chunk_result in ex.map(_extract_page_range_worker, ranges):
-        page_data.extend(chunk_result)
-    return page_data
+    print(f"Extracting {page_count} page(s) across {len(ranges)} worker(s)...")
+    futures = {ex.submit(_extract_page_range_worker, r): r for r in ranges}
+    chunks = []
+    done_pages = 0
+    for fut in as_completed(futures):
+        _, start, end, _ = futures[fut]
+        chunks.append((start, fut.result()))
+        done_pages += end - start
+        print(f"  extracted pages {start + 1}-{end} ({done_pages}/{page_count} done)")
+    chunks.sort(key=lambda sc: sc[0])  # completion order != page order
+    return [line for _, chunk in chunks for line in chunk]
 
 
 def _convert_page_worker(args):
@@ -597,8 +619,22 @@ def _convert_page_worker(args):
 
 
 def _convert_all_parallel(ex, page_data, size_to_level, body_size):
-    args = [(lines, width, size_to_level, body_size) for lines, width in page_data]
-    return list(ex.map(_convert_page_worker, args))
+    total = len(page_data)
+    print(f"Converting {total} page(s)...")
+    futures = {
+        ex.submit(_convert_page_worker, (lines, width, size_to_level, body_size)): i
+        for i, (lines, width) in enumerate(page_data)
+    }
+    results = [None] * total
+    done = 0
+    milestone = max(1, total // 10)
+    for fut in as_completed(futures):
+        idx = futures[fut]
+        results[idx] = fut.result()
+        done += 1
+        if done % milestone == 0 or done == total:
+            print(f"  converted {done}/{total} pages")
+    return results
 
 
 def _extract_all_parallel_multi(ex, jobs, specs):
@@ -619,12 +655,17 @@ def _extract_all_parallel_multi(ex, jobs, specs):
         for start in range(0, page_count, chunk_size):
             end = min(start + chunk_size, page_count)
             fut = ex.submit(_extract_page_range_worker, (pdf_path, start, end, use_ocr))
-            futures[fut] = (pdf_path, start)
+            futures[fut] = (pdf_path, start, end)
 
+    total_pages = sum(page_count for _, page_count, _ in specs)
+    print(f"Extracting {total_pages} page(s) across {len(specs)} file(s), {jobs} worker(s)...")
     chunks_by_file = {pdf_path: [] for pdf_path, _, _ in specs}
+    done_pages = 0
     for fut in as_completed(futures):
-        pdf_path, start = futures[fut]
+        pdf_path, start, end = futures[fut]
         chunks_by_file[pdf_path].append((start, fut.result()))
+        done_pages += end - start
+        print(f"  extracted {os.path.basename(pdf_path)} pages {start + 1}-{end} ({done_pages}/{total_pages} done)")
 
     page_data_by_file = {}
     for pdf_path, chunks in chunks_by_file.items():
@@ -645,10 +686,17 @@ def _convert_all_parallel_multi(ex, page_data_by_file, stats_by_file):
             fut = ex.submit(_convert_page_worker, (lines, width, size_to_level, body_size))
             futures[fut] = (pdf_path, idx)
 
+    total = len(futures)
+    print(f"Converting {total} page(s) across {len(page_data_by_file)} file(s)...")
     chunks_by_file = {pdf_path: [None] * len(page_data) for pdf_path, page_data in page_data_by_file.items()}
+    done = 0
+    milestone = max(1, total // 10)
     for fut in as_completed(futures):
         pdf_path, idx = futures[fut]
         chunks_by_file[pdf_path][idx] = fut.result()
+        done += 1
+        if done % milestone == 0 or done == total:
+            print(f"  converted {done}/{total} pages")
     return chunks_by_file
 
 
@@ -663,9 +711,11 @@ def compute_crc32(path):
     return format(crc & 0xFFFFFFFF, "08x")
 
 
-def read_existing_crc32(md_path):
-    """Peek at an existing output file's front matter for its recorded CRC32,
-    without reading the whole (possibly large) file."""
+def _read_front_matter(md_path):
+    """Peek at an existing output file's YAML front matter (source_pdf,
+    source_crc32, source_pages, converted_at) without reading the whole
+    (possibly large) file. Returns a {field: value} dict of strings, or
+    None if the file doesn't exist or has no front matter."""
     if not os.path.exists(md_path):
         return None
     try:
@@ -678,8 +728,14 @@ def read_existing_crc32(md_path):
     end = head.find("---", 3)
     if end == -1:
         return None
-    m = FRONT_MATTER_CRC_RE.search(head[:end])
-    return m.group(1) if m else None
+    return dict(FRONT_MATTER_FIELD_RE.findall(head[:end]))
+
+
+def read_existing_crc32(md_path):
+    """Peek at an existing output file's front matter for its recorded CRC32,
+    without reading the whole (possibly large) file."""
+    fm = _read_front_matter(md_path)
+    return fm.get("source_crc32") if fm else None
 
 
 def _add_page_markers(per_page_chunks):
@@ -699,12 +755,13 @@ def _add_page_markers(per_page_chunks):
     return doc_out
 
 
-def build_document(doc_out, pdf_path, crc32):
+def build_document(doc_out, pdf_path, crc32, page_count):
     """Assemble front matter + a line-numbered Contents block + the body."""
     front_matter = (
         "---\n"
         f"source_pdf: {os.path.abspath(pdf_path)}\n"
         f"source_crc32: {crc32}\n"
+        f"source_pages: {page_count}\n"
         f"converted_at: {datetime.datetime.now().isoformat(timespec='seconds')}\n"
         "---"
     )
@@ -767,6 +824,7 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
 
     doc = fitz.open(pdf_path)
     page_count = len(doc)
+    print(f"Reading {pdf_path} ({page_count} page(s))...")
 
     parallel = jobs > 1 and page_count > 1
     if parallel:
@@ -783,22 +841,29 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
             body_size, size_to_level = _compute_global_stats(page_data)
             per_page_chunks = _convert_all_parallel(ex, page_data, size_to_level, body_size)
     else:
-        page_data = [(extract_lines_or_ocr(page, use_ocr), page.rect.width) for page in doc]
+        print(f"Extracting {page_count} page(s)...")
+        page_data = []
+        for i, page in enumerate(doc):
+            page_data.append((extract_lines_or_ocr(page, use_ocr), page.rect.width))
+            print(f"  extracted page {i + 1}/{page_count}")
         _warn_if_ocr_unavailable(pdf_path, page_count, use_ocr, page_data)
         body_size, size_to_level = _compute_global_stats(page_data)
-        per_page_chunks = [
-            convert_lines_to_markdown(lines, width, size_to_level, body_size)
-            for lines, width in page_data
-        ]
+        print(f"Converting {page_count} page(s)...")
+        per_page_chunks = []
+        milestone = max(1, page_count // 10)
+        for i, (lines, width) in enumerate(page_data):
+            per_page_chunks.append(convert_lines_to_markdown(lines, width, size_to_level, body_size))
+            if (i + 1) % milestone == 0 or i + 1 == page_count:
+                print(f"  converted {i + 1}/{page_count} pages")
 
     doc_out = _add_page_markers(per_page_chunks)
 
-    _write_markdown(doc_out, pdf_path, crc32, out_path)
+    _write_markdown(doc_out, pdf_path, crc32, out_path, page_count)
     return out_path, True
 
 
-def _write_markdown(doc_out, pdf_path, crc32, out_path):
-    markdown = build_document(doc_out, pdf_path, crc32)
+def _write_markdown(doc_out, pdf_path, crc32, out_path, page_count):
+    markdown = build_document(doc_out, pdf_path, crc32, page_count)
     with open(out_path, "w") as f:
         f.write(markdown)
 
@@ -816,6 +881,59 @@ def find_pdfs(folder, recursive=False):
         for name in os.listdir(folder)
         if name.lower().endswith(".pdf")
     )
+
+
+def find_markdown(folder, recursive=False):
+    if recursive:
+        matches = []
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                if name.lower().endswith(".md"):
+                    matches.append(os.path.join(root, name))
+        return sorted(matches)
+    return sorted(
+        os.path.join(folder, name)
+        for name in os.listdir(folder)
+        if name.lower().endswith(".md")
+    )
+
+
+def list_cache(folder, recursive=False):
+    """Report every .md in folder that carries this script's front matter --
+    its source PDF, page count, and conversion timestamp -- plus whether
+    it's still up to date with that PDF's current CRC32. Pure lookup, no
+    conversion happens here: this reads the CRC32 "memory" the convert path
+    (see build_document) already writes to every output, it doesn't add a
+    separate cache index file of its own."""
+    entries = []
+    for md_path in find_markdown(folder, recursive=recursive):
+        fm = _read_front_matter(md_path)
+        if not fm or "source_crc32" not in fm:
+            continue  # not one of this script's outputs
+        source_pdf = fm.get("source_pdf", "?")
+        if not os.path.exists(source_pdf):
+            status = "source PDF missing"
+        elif compute_crc32(source_pdf) == fm["source_crc32"]:
+            status = "up to date"
+        else:
+            status = "stale (PDF changed)"
+        entries.append({
+            "md_path": md_path,
+            "pages": fm.get("source_pages", "?"),
+            "status": status,
+            "converted_at": fm.get("converted_at", "?"),
+        })
+
+    if not entries:
+        print(f"No converted (.md) files found in {folder}", file=sys.stderr)
+        return entries
+
+    page_total = sum(int(e["pages"]) for e in entries if e["pages"].isdigit())
+    print(f"{'Pages':>6}  {'Status':<20}  {'Last read':<19}  Markdown file")
+    for e in entries:
+        print(f"{e['pages']:>6}  {e['status']:<20}  {e['converted_at']:<19}  {e['md_path']}")
+    print(f"---\n{len(entries)} file(s), {page_total} page(s) total")
+    return entries
 
 
 def _convert_folder_shared_pool(tasks, force, jobs, use_ocr):
@@ -840,6 +958,9 @@ def _convert_folder_shared_pool(tasks, force, jobs, use_ocr):
     if not pending:
         return
 
+    total_pages = sum(page_count for _, _, _, page_count in pending)
+    print(f"Converting {len(pending)} PDF(s), {total_pages} page(s) total, with {jobs} worker(s)...")
+
     with ProcessPoolExecutor(max_workers=jobs) as ex:
         specs = [(pdf_path, page_count, use_ocr) for pdf_path, _, _, page_count in pending]
         page_data_by_file = _extract_all_parallel_multi(ex, jobs, specs)
@@ -852,10 +973,10 @@ def _convert_folder_shared_pool(tasks, force, jobs, use_ocr):
 
         chunks_by_file = _convert_all_parallel_multi(ex, page_data_by_file, stats_by_file)
 
-    for pdf_path, out_path, crc32, _ in pending:
+    for pdf_path, out_path, crc32, page_count in pending:
         doc_out = _add_page_markers(chunks_by_file[pdf_path])
         try:
-            _write_markdown(doc_out, pdf_path, crc32, out_path)
+            _write_markdown(doc_out, pdf_path, crc32, out_path, page_count)
             print(f"Wrote: {out_path}")
         except OSError as exc:
             print(f"FAILED on {pdf_path}: {exc}", file=sys.stderr)
@@ -898,6 +1019,7 @@ def main():
     recursive = "--recursive" in raw
     force = "--force" in raw
     use_ocr = "--no-ocr" not in raw
+    list_cache_mode = "--list-cache" in raw
 
     jobs = 1
     if "--jobs" in raw:
@@ -914,26 +1036,38 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a in ("--recursive", "--force", "--no-ocr"):
+        if a in ("--recursive", "--force", "--no-ocr", "--list-cache"):
             continue
         if a == "--jobs":
             skip_next = True
             continue
         positional.append(a)
 
+    usage = (
+        "Usage:\n"
+        "  Single file:  pdf_to_markdown.py <input.pdf> [output.md] [--force] [--jobs N] [--no-ocr]\n"
+        "  Whole folder: pdf_to_markdown.py <folder> [output_folder] [--recursive] [--force] [--jobs N] [--no-ocr]\n"
+        "                (writes each <name>.md next to its source PDF if\n"
+        "                 output_folder is omitted; --recursive also descends\n"
+        "                 into subfolders; --force reconverts even if the PDF's\n"
+        "                 CRC32 already matches the existing .md; --jobs N splits\n"
+        "                 a PDF's pages across N worker processes, default 1;\n"
+        "                 --no-ocr disables the OCR fallback for scanned pages)\n"
+        "  List cache:   pdf_to_markdown.py --list-cache <folder> [--recursive]\n"
+        "                (reports every already-converted .md in <folder> --\n"
+        "                 source PDF page count, last-read date, and whether\n"
+        "                 it's still up to date with that PDF -- no conversion)"
+    )
+
+    if list_cache_mode:
+        if len(positional) != 1:
+            print(usage, file=sys.stderr)
+            sys.exit(1)
+        list_cache(positional[0], recursive=recursive)
+        return
+
     if len(positional) not in (1, 2):
-        print(
-            "Usage:\n"
-            "  Single file:  pdf_to_markdown.py <input.pdf> [output.md] [--force] [--jobs N] [--no-ocr]\n"
-            "  Whole folder: pdf_to_markdown.py <folder> [output_folder] [--recursive] [--force] [--jobs N] [--no-ocr]\n"
-            "                (writes each <name>.md next to its source PDF if\n"
-            "                 output_folder is omitted; --recursive also descends\n"
-            "                 into subfolders; --force reconverts even if the PDF's\n"
-            "                 CRC32 already matches the existing .md; --jobs N splits\n"
-            "                 a PDF's pages across N worker processes, default 1;\n"
-            "                 --no-ocr disables the OCR fallback for scanned pages)",
-            file=sys.stderr,
-        )
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
     input_path = positional[0]

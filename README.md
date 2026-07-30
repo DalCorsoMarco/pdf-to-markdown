@@ -150,8 +150,12 @@ every page converts faster than this.
   marker before each page's content — any paragraph or table, not just
   headings, can be traced back to its source page.
 - **Built-in memory** — every output's front matter records the source
-  PDF's CRC32 checksum. Re-running the script on an unchanged PDF is an
-  instant no-op instead of redoing the work; `--force` overrides this.
+  PDF's CRC32 checksum and page count. Re-running the script on an
+  unchanged PDF is an instant no-op instead of redoing the work; `--force`
+  overrides this. `--list-cache` (or `/pdf-to-markdown:list-cache`) reads
+  that memory back — every already-converted file in a folder, its page
+  count, last-read date, and whether it's still up to date — without
+  converting anything.
 - **Single file or whole folders**, optionally recursive, with per-file
   failure isolation (one bad PDF doesn't stop a batch).
 - **Multi-process speedup** (`--jobs N`) for long documents — splits a
@@ -289,6 +293,24 @@ harm, it just takes up some space.
 
 ## Usage
 
+### As a skill (the normal way)
+
+Once installed, just talk to Claude — no commands, no flags, no terminal.
+Ask it to *"convert this PDF to Markdown"*, hand it a PDF and ask a
+question about its contents, or point it at a folder of manuals. Claude
+decides when this skill applies (per the trigger conditions in
+`SKILL.md`) and runs the script for you in the background, then reads or
+shares the resulting `.md` file. Everything below this point — the exact
+CLI, its flags — is what Claude is running under the hood; you don't need
+to know it to use the skill day to day. It's here for reference, and for
+running the script directly if you ever want to (see below).
+
+### Running the script directly
+
+Useful outside Claude Code entirely — your own terminal, a CI pipeline,
+or any time you'd rather skip the agent and call the same script Claude
+uses.
+
 **Single file:**
 ```bash
 python3 scripts/pdf_to_markdown.py input.pdf [output.md] [--force] [--jobs N] [--no-ocr]
@@ -305,6 +327,22 @@ each `.md` is written next to its source PDF. With it, all outputs go there
 instead, mirroring the subfolder structure. Add `--recursive` to also
 descend into subfolders.
 
+Both modes print progress as they go — which page is being extracted,
+which is being converted, and a final `Wrote: ...` per file — instead of
+staying silent until the whole run finishes. Useful both at a terminal and
+when Claude is the one running it: it (and you) can see the run is
+actually progressing on a large batch, not just hanging.
+
+**What's already been converted:**
+```bash
+python3 scripts/pdf_to_markdown.py --list-cache folder/ [--recursive]
+```
+Reports every `.md` in `folder/` that has this script's front matter —
+page count, last-read (conversion) date, and whether it's still up to date
+with its source PDF (`up to date`, `stale (PDF changed)`, or `source PDF
+missing`) — without converting anything. As a skill, this is also exposed
+as `/pdf-to-markdown:list-cache <folder>`.
+
 ### Flags
 
 | Flag | Effect |
@@ -312,6 +350,7 @@ descend into subfolders.
 | `--force` | Reconvert even if the PDF's CRC32 already matches the existing `.md` |
 | `--jobs N` | Split a PDF's pages across N worker processes (default: 1, sequential) |
 | `--no-ocr` | Skip the OCR fallback entirely, even for pages with no text layer |
+| `--list-cache` | List already-converted files instead of converting (see above) |
 
 ## Output format
 
@@ -319,6 +358,7 @@ descend into subfolders.
 ---
 source_pdf: /Users/you/Downloads/manual.pdf
 source_crc32: 8758ed3e
+source_pages: 3
 converted_at: 2026-07-29T21:33:03
 ---
 

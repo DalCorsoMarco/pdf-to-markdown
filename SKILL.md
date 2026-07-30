@@ -81,6 +81,7 @@ Every `.md` this script writes opens with a small front-matter block:
 ---
 source_pdf: /Users/you/Downloads/manual.pdf
 source_crc32: 8758ed3e
+source_pages: 3
 converted_at: 2026-07-29T21:33:03
 ---
 ```
@@ -102,6 +103,28 @@ against what's recorded:
 Pass `--force` to reconvert regardless -- useful right after you've changed
 `pdf_to_markdown.py` itself and want existing outputs regenerated with the
 new logic even though the source PDFs haven't changed.
+
+If the user asks what's already been converted, or wants a status check
+before running a large batch, read that memory back instead of converting
+anything:
+
+```bash
+python3 scripts/pdf_to_markdown.py --list-cache <folder> [--recursive]
+```
+
+Reports every `.md` in `<folder>` with this front matter -- page count,
+last-read (conversion) date, and whether it's still `up to date`, `stale
+(PDF changed)`, or has its `source PDF missing` -- pure lookup, zero
+conversion work. Also exposed as the `/pdf-to-markdown:list-cache` command.
+
+## Progress output
+
+Both conversion modes print as they run -- which page is being extracted,
+which is being converted, then `Wrote: ...` per file -- rather than staying
+silent until the whole run finishes. On a large batch this is the signal
+that the run is actually progressing, not hung; read it back to the user
+if the conversion is taking a while, instead of just waiting on the tool
+call with no commentary.
 
 ## Speeding up long documents: --jobs N
 
