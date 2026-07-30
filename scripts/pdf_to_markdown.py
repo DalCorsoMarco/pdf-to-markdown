@@ -62,14 +62,20 @@ converts every .pdf found directly inside it. Without output_folder, each
 mirroring the subfolder structure. Add --recursive to also descend into
 subfolders.
 
---jobs N (default 1, i.e. single-process/sequential): splits a PDF's pages
-across N worker processes instead of handling them one at a time. Real
+--jobs N (default 1, i.e. single-process/sequential): splits work across N
+worker processes instead of handling it one piece at a time. Real
 processes, not threads -- Python's GIL means threads wouldn't actually
 speed up this CPU-bound text/regex work, so processes are what deliver the
 speedup --jobs is for. Output is byte-for-byte identical to --jobs 1
-(aside from the front matter's timestamp); only wall-clock time changes,
-and mainly pays off on longer documents where per-worker startup overhead
-is small relative to the work.
+(aside from the front matter's timestamp); only wall-clock time changes.
+In single-file mode this splits *that PDF's pages* across N workers, and
+mainly pays off on longer documents where per-worker startup overhead is
+small relative to the work. In folder mode with more than one PDF found,
+every file's page-chunks -- from every PDF found, not just one at a time
+-- are queued on the same shared pool of N workers, so a folder of many
+PDFs converts concurrently instead of one after another, and one
+page-heavy or OCR-heavy file among several small ones still gets most of
+the available workers instead of being capped at a fixed per-file share.
 
 OCR fallback: a page with zero extractable text (scanned/rasterized, no
 real text layer at all) is rendered to an image and run through local
@@ -91,7 +97,8 @@ import math
 import shutil
 import zlib
 import datetime
-from concurrent.futures import ProcessPoolExecutor
+import functools
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import fitz  # PyMuPDF
 
@@ -144,7 +151,7 @@ def row_looks_like_prose(text):
 # lowercase-led prose. This matters especially for OCR'd pages: this kind of
 # subheading is sometimes rendered at the same recognized size as body text,
 # so the font-size heading check upstream doesn't always catch it either.
-NEW_CONTENT_RE = re.compile(r"^(?:[A-Z]{2,}(?:\s+[A-Z]{2,})+|[A-Z]{4,})\s")
+NEW_CONTENT_RE = re.compile(r"^(?:[A-Z]{2,}(?:\s+[A-Z]{2,})+|[A-Z]{4,})(?:\s|$)")
 
 
 def looks_like_new_content(text):
@@ -208,6 +215,7 @@ def extract_lines(page):
     return lines
 
 
+@functools.lru_cache(maxsize=1)
 def tesseract_available():
     return shutil.which("tesseract") is not None
 
@@ -559,17 +567,15 @@ def _extract_page_range_worker(args):
     return [(extract_lines_or_ocr(doc[i], use_ocr), doc[i].rect.width) for i in range(start, end)]
 
 
-def _extract_all_parallel(pdf_path, page_count, jobs, use_ocr=True):
-    jobs = max(1, min(jobs, page_count))
+def _extract_all_parallel(ex, pdf_path, page_count, jobs, use_ocr=True):
     chunk_size = math.ceil(page_count / jobs)
     ranges = [
         (pdf_path, start, min(start + chunk_size, page_count), use_ocr)
         for start in range(0, page_count, chunk_size)
     ]
     page_data = []
-    with ProcessPoolExecutor(max_workers=jobs) as ex:
-        for chunk_result in ex.map(_extract_page_range_worker, ranges):
-            page_data.extend(chunk_result)
+    for chunk_result in ex.map(_extract_page_range_worker, ranges):
+        page_data.extend(chunk_result)
     return page_data
 
 
@@ -578,11 +584,60 @@ def _convert_page_worker(args):
     return convert_lines_to_markdown(lines, width, size_to_level, body_size)
 
 
-def _convert_all_parallel(page_data, size_to_level, body_size, jobs):
-    jobs = max(1, min(jobs, len(page_data)))
+def _convert_all_parallel(ex, page_data, size_to_level, body_size):
     args = [(lines, width, size_to_level, body_size) for lines, width in page_data]
-    with ProcessPoolExecutor(max_workers=jobs) as ex:
-        return list(ex.map(_convert_page_worker, args))
+    return list(ex.map(_convert_page_worker, args))
+
+
+def _extract_all_parallel_multi(ex, jobs, specs):
+    """Folder-mode counterpart of _extract_all_parallel: specs is a list of
+    (pdf_path, page_count, use_ocr) for *several* files, and every file's
+    page-range chunks are submitted to the same shared pool `ex` instead of
+    each file getting its own separate pool. That's what lets one page-heavy
+    or OCR-heavy file among several small ones still soak up most of the
+    available workers -- the small files' handful of chunks finish almost
+    immediately and free their workers for whichever file still has chunks
+    queued, rather than every file being capped at (jobs / file_count)
+    workers regardless of how much work it actually has.
+    Returns {pdf_path: page_data}, each page_data in original page order."""
+    futures = {}
+    for pdf_path, page_count, use_ocr in specs:
+        file_chunks = max(1, min(jobs, page_count))
+        chunk_size = math.ceil(page_count / file_chunks)
+        for start in range(0, page_count, chunk_size):
+            end = min(start + chunk_size, page_count)
+            fut = ex.submit(_extract_page_range_worker, (pdf_path, start, end, use_ocr))
+            futures[fut] = (pdf_path, start)
+
+    chunks_by_file = {pdf_path: [] for pdf_path, _, _ in specs}
+    for fut in as_completed(futures):
+        pdf_path, start = futures[fut]
+        chunks_by_file[pdf_path].append((start, fut.result()))
+
+    page_data_by_file = {}
+    for pdf_path, chunks in chunks_by_file.items():
+        chunks.sort(key=lambda sc: sc[0])  # completion order != page order
+        page_data_by_file[pdf_path] = [line for _, chunk in chunks for line in chunk]
+    return page_data_by_file
+
+
+def _convert_all_parallel_multi(ex, page_data_by_file, stats_by_file):
+    """Folder-mode counterpart of _convert_all_parallel: every file's
+    per-page conversion tasks share the same pool `ex`, for the same reason
+    extraction does above. stats_by_file is {pdf_path: (body_size,
+    size_to_level)}. Returns {pdf_path: [markdown chunks per page, in order]}."""
+    futures = {}
+    for pdf_path, page_data in page_data_by_file.items():
+        body_size, size_to_level = stats_by_file[pdf_path]
+        for idx, (lines, width) in enumerate(page_data):
+            fut = ex.submit(_convert_page_worker, (lines, width, size_to_level, body_size))
+            futures[fut] = (pdf_path, idx)
+
+    chunks_by_file = {pdf_path: [None] * len(page_data) for pdf_path, page_data in page_data_by_file.items()}
+    for fut in as_completed(futures):
+        pdf_path, idx = futures[fut]
+        chunks_by_file[pdf_path][idx] = fut.result()
+    return chunks_by_file
 
 
 def compute_crc32(path):
@@ -656,6 +711,18 @@ def build_document(doc_out, pdf_path, crc32):
     return front_matter + "\n\n" + toc_text + "\n\n" + body_text + "\n"
 
 
+def _warn_if_ocr_unavailable(pdf_path, page_count, use_ocr, page_data):
+    if use_ocr and page_count > 0 and not tesseract_available() and not any(lines for lines, _ in page_data):
+        print(f"{pdf_path}: {TESSERACT_INSTALL_HINT}", file=sys.stderr)
+
+
+def _compute_global_stats(page_data):
+    all_lines = [l for lines, _ in page_data for l in lines]
+    body_size = compute_body_size(all_lines)
+    size_to_level = compute_heading_levels(all_lines, body_size)
+    return body_size, size_to_level
+
+
 def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
     if out_path is None:
         out_path = os.path.splitext(pdf_path)[0] + ".md"
@@ -669,23 +736,22 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
 
     parallel = jobs > 1 and page_count > 1
     if parallel:
+        # One pool serves both the extract and convert phases below, instead
+        # of spinning up and tearing down a separate ProcessPoolExecutor for
+        # each -- halves the worker-process fork/spawn overhead per run.
         # Re-opens the PDF once per worker process instead of reusing `doc` --
         # fitz page/document objects aren't picklable, so each worker gets its
         # own handle onto its slice of pages.
-        page_data = _extract_all_parallel(pdf_path, page_count, jobs, use_ocr=use_ocr)
+        jobs = max(1, min(jobs, page_count))
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            page_data = _extract_all_parallel(ex, pdf_path, page_count, jobs, use_ocr=use_ocr)
+            _warn_if_ocr_unavailable(pdf_path, page_count, use_ocr, page_data)
+            body_size, size_to_level = _compute_global_stats(page_data)
+            per_page_chunks = _convert_all_parallel(ex, page_data, size_to_level, body_size)
     else:
         page_data = [(extract_lines_or_ocr(page, use_ocr), page.rect.width) for page in doc]
-
-    if use_ocr and page_count > 0 and not tesseract_available() and not any(lines for lines, _ in page_data):
-        print(f"{pdf_path}: {TESSERACT_INSTALL_HINT}", file=sys.stderr)
-
-    all_lines = [l for lines, _ in page_data for l in lines]
-    body_size = compute_body_size(all_lines)
-    size_to_level = compute_heading_levels(all_lines, body_size)
-
-    if parallel:
-        per_page_chunks = _convert_all_parallel(page_data, size_to_level, body_size, jobs)
-    else:
+        _warn_if_ocr_unavailable(pdf_path, page_count, use_ocr, page_data)
+        body_size, size_to_level = _compute_global_stats(page_data)
         per_page_chunks = [
             convert_lines_to_markdown(lines, width, size_to_level, body_size)
             for lines, width in page_data
@@ -695,12 +761,14 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
     for chunks in per_page_chunks:
         doc_out.extend(chunks)
 
-    markdown = build_document(doc_out, pdf_path, crc32)
+    _write_markdown(doc_out, pdf_path, crc32, out_path)
+    return out_path, True
 
+
+def _write_markdown(doc_out, pdf_path, crc32, out_path):
+    markdown = build_document(doc_out, pdf_path, crc32)
     with open(out_path, "w") as f:
         f.write(markdown)
-
-    return out_path, True
 
 
 def find_pdfs(folder, recursive=False):
@@ -718,6 +786,51 @@ def find_pdfs(folder, recursive=False):
     )
 
 
+def _convert_folder_shared_pool(tasks, force, jobs, use_ocr):
+    """Converts several PDFs through one shared worker pool instead of each
+    file getting its own (see _extract_all_parallel_multi for why): files
+    already up to date are resolved first, without touching the pool at
+    all, then every remaining file's page-chunks -- extraction and
+    conversion alike -- are submitted to the same pool so a single
+    page-heavy or OCR-heavy file among several small ones still gets most
+    of the available workers instead of being capped at its own fixed
+    share."""
+    pending = []  # (pdf_path, out_path, crc32, page_count)
+    for pdf_path, out_path in tasks:
+        resolved_out = out_path or (os.path.splitext(pdf_path)[0] + ".md")
+        crc32 = compute_crc32(pdf_path)
+        if not force and read_existing_crc32(resolved_out) == crc32:
+            print(f"Up to date, skipped: {resolved_out}")
+            continue
+        page_count = fitz.open(pdf_path).page_count
+        pending.append((pdf_path, resolved_out, crc32, page_count))
+
+    if not pending:
+        return
+
+    with ProcessPoolExecutor(max_workers=jobs) as ex:
+        specs = [(pdf_path, page_count, use_ocr) for pdf_path, _, _, page_count in pending]
+        page_data_by_file = _extract_all_parallel_multi(ex, jobs, specs)
+
+        stats_by_file = {}
+        for pdf_path, _, _, page_count in pending:
+            page_data = page_data_by_file[pdf_path]
+            _warn_if_ocr_unavailable(pdf_path, page_count, use_ocr, page_data)
+            stats_by_file[pdf_path] = _compute_global_stats(page_data)
+
+        chunks_by_file = _convert_all_parallel_multi(ex, page_data_by_file, stats_by_file)
+
+    for pdf_path, out_path, crc32, _ in pending:
+        doc_out = []
+        for chunk in chunks_by_file[pdf_path]:
+            doc_out.extend(chunk)
+        try:
+            _write_markdown(doc_out, pdf_path, crc32, out_path)
+            print(f"Wrote: {out_path}")
+        except OSError as exc:
+            print(f"FAILED on {pdf_path}: {exc}", file=sys.stderr)
+
+
 def convert_folder(folder, out_dir=None, recursive=False, force=False, jobs=1, use_ocr=True):
     pdfs = find_pdfs(folder, recursive=recursive)
     if not pdfs:
@@ -727,6 +840,7 @@ def convert_folder(folder, out_dir=None, recursive=False, force=False, jobs=1, u
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
+    tasks = []
     for pdf_path in pdfs:
         if out_dir:
             rel = os.path.relpath(pdf_path, folder)
@@ -734,12 +848,19 @@ def convert_folder(folder, out_dir=None, recursive=False, force=False, jobs=1, u
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
         else:
             out_path = None
+        tasks.append((pdf_path, out_path))
 
-        try:
-            result, written = convert(pdf_path, out_path, force=force, jobs=jobs, use_ocr=use_ocr)
-            print(f"{'Wrote' if written else 'Up to date, skipped'}: {result}")
-        except Exception as exc:  # noqa: BLE001 - one bad PDF shouldn't stop the batch
-            print(f"FAILED on {pdf_path}: {exc}", file=sys.stderr)
+    if jobs > 1 and len(tasks) > 1:
+        _convert_folder_shared_pool(tasks, force, jobs, use_ocr)
+    else:
+        # A single PDF, or --jobs 1: no benefit from a shared multi-file
+        # pool, so fall back to this one file's own page-level splitting.
+        for pdf_path, out_path in tasks:
+            try:
+                result, written = convert(pdf_path, out_path, force=force, jobs=jobs, use_ocr=use_ocr)
+                print(f"{'Wrote' if written else 'Up to date, skipped'}: {result}")
+            except Exception as exc:  # noqa: BLE001 - one bad PDF shouldn't stop the batch
+                print(f"FAILED on {pdf_path}: {exc}", file=sys.stderr)
 
 
 def main():
