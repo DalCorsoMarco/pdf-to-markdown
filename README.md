@@ -1,54 +1,121 @@
-# pdf-to-markdown
+<p align="center">
+  <img src="assets/logo.svg" width="140" alt="pdf-to-markdown logo">
+</p>
 
-Convert visually rich, multi-column PDFs — manuals, sourcebooks, reference
-documents, and similar layouts — into a single clean Markdown file.
+<h1 align="center">pdf-to-markdown</h1>
+
+<p align="center">
+  <em>Turn dense, multi-column PDFs into clean Markdown — without ever
+  asking a model to look at a single page.</em>
+</p>
+
+<p align="center">
+  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.8%2B-blue.svg">
+  <img alt="Model calls in conversion path" src="https://img.shields.io/badge/model%20calls%20in%20conversion-0-brightgreen.svg">
+  <img alt="Claude Code skill" src="https://img.shields.io/badge/Claude%20Code-skill-5A45FF.svg">
+</p>
+
+<p align="center">
+  <a href="#why-this-exists">Why</a> ·
+  <a href="#what-you-get">What you get</a> ·
+  <a href="#performance">Performance</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#installing-this-skill-in-claude-code">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#limitations">Limitations</a>
+</p>
+
+---
 
 It's a Claude Code **skill**: a `SKILL.md` file that tells Claude when and
 how to use the bundled script, plus the script itself
 (`scripts/pdf_to_markdown.py`). The script is a **deterministic, standalone
 Python tool** — no model/LLM involved in the conversion itself. Point it at
-a PDF, get a `.md` file back.
+a PDF, get real Markdown back: headings, tables, and reading order intact,
+for the cost of running Python, not tokens.
 
-## Why
+## Why this exists
 
-Reading a PDF directly (e.g. with an LLM's built-in file tools) renders
-every page as an image, which is slow and expensive if you just want the
-text. This script extracts real text from the PDF's own text layer,
-reconstructs reading order across columns, detects headings from font size,
-recognizes common structured patterns (numbered reference tables,
-label/value lines), and writes it all out as one Markdown file — for the
-cost of running Python, not tokens.
+Hand an LLM a PDF and, under the hood, every page usually gets rendered as
+an image and read back in as pixels — even when the PDF is nothing but
+ordinary text. That's slow, it burns tokens on content that was text all
+along, and on a real multi-column layout it still doesn't reliably get the
+reading order right, because "read this image top to bottom" and "this
+document actually has two columns" are different problems.
+
+This skill started out doing exactly that — an LLM reading each page and
+using judgment to structure it — and was rebuilt from the ground up as a
+fully deterministic Python script with zero model calls anywhere in the
+conversion path. The point was to stop paying image-reading prices for
+what is, underneath the formatting, plain text: real extraction from the
+PDF's own text layer, column-aware reading order, font-size-based heading
+detection, and table reconstruction, all inferred by code instead of read
+by a model.
+
+## What you get
+
+- **It's free and instant, not just "cheaper."** The conversion itself
+  costs 0 tokens, always — see [Performance](#performance) below for real,
+  measured numbers rather than a marketing claim.
+- **Every run is reproducible.** Same PDF in, same Markdown out, byte for
+  byte (aside from the timestamp) — nothing to second-guess between runs.
+- **It remembers what it's already done.** Re-running on an unchanged PDF
+  is an instant no-op, so pointing it at a growing folder over and over
+  only ever pays for the files that actually changed.
+- **Everything stays traceable to its source.** Every heading in the
+  Contents block carries both a line number and the PDF page it starts
+  on, and the body itself is threaded with page markers throughout — any
+  paragraph or table can be traced back to exactly where it came from in
+  the original document.
+- **It scales to a whole library, not just one document.** Point it at a
+  folder — even a deeply nested one — and every PDF converts through one
+  shared worker pool at once, instead of waiting on files one at a time.
+- **It knows what it doesn't know.** Scanned pages fall back to local OCR
+  automatically, and content the heuristics can't confidently structure
+  (an irregular table shape, for instance) is left as plain prose instead
+  of being guessed at and silently wrong.
 
 ## Performance
 
 Measured on two real-world test documents — a couple of data points, not a
 rigorous multi-trial benchmark, so treat this as illustrative rather than a
-guaranteed ratio:
+guaranteed ratio. Both columns below are the actual cost of reading the PDF
+and producing the Markdown, measured the same way for each: "reads the PDF
+directly" is a fresh, isolated agent transcribing the PDF's pages as
+images; "uses this skill" is the script itself, timed with `time` on an
+**Apple M4, 10 cores** (single-process, `--jobs 1`, the default), averaged
+over 3 runs. Wall-clock times are naturally tied to this hardware — slower
+or faster on different CPUs — while the token counts and the "0 tokens"
+result aren't, since they don't depend on the machine running the script.
 
 | Document | Reads the PDF directly (no skill) | Uses this skill |
 |---|---|---|
-| 2-page document | ~52,000 tokens / ~193s | ~35,000 tokens / ~30s |
-| 20-page document (sample) | ~88,800 tokens / ~436s (~7.3 min) | ~49,200 tokens / ~82s |
+| 2-page document | ~52,000 tokens / ~193s | 0 tokens / ~1.5s* |
+| 20-page document (sample) | ~88,800 tokens / ~436s (~7.3 min) | 0 tokens / ~0.6s |
 
-A few things worth knowing about these numbers:
+\* This particular 2-page document's own cover page has no real text layer
+(it's essentially a full-page image), so this run includes a real local
+Tesseract OCR pass on that one page, not just text extraction — that OCR
+pass is most of the ~1.5s. A same-size document with a real text layer on
+every page converts faster than this.
 
-- **The gap widens on longer documents**, as expected: ~1.4x more tokens
-  without the skill on the 2-page document, ~1.8x more on the 20-page one.
-  The script's own cost stays close to zero regardless of page count;
-  reading a PDF directly scales with it, since every additional page is
-  another image to render and read.
-- **Most of the "with skill" token count isn't PDF analysis at all** — it's
-  the ordinary overhead of running any agent (reading `SKILL.md`, reporting
-  the result back). The conversion itself runs in Python and costs 0
-  tokens; the numbers above are largely fixed overhead, not something that
-  scales with the document.
-- **These numbers came from a fresh, isolated test agent** spun up
-  specifically to measure this. Used within an ongoing session instead
-  (the normal way), the "with skill" side would be lower still, since that
-  fixed overhead is already paid for by the session itself.
-- **The 20-page run is a sample from a larger document**, not necessarily
-  representative of every document's density of images, columns, or tables
-  — actual results will vary by document.
+> [!IMPORTANT]
+> **Honest numbers, not marketing ones.**
+> - **0 tokens is exact, not rounded** — the conversion runs entirely in
+>   Python (plus local OCR when needed), with no model call anywhere in
+>   that path, regardless of document size.
+> - **The gap widens on longer documents**, as expected: the script's own
+>   cost stays roughly flat (well under a second here) regardless of page
+>   count, while reading a PDF directly scales with it, since every
+>   additional page is another image to render and read.
+> - **The 20-page row is a fresh 20-page sample** (pages 1–20) of the same
+>   source document used for the original "no skill" measurement above,
+>   not necessarily the exact same slice byte-for-byte — a representative
+>   proxy, not a controlled A/B on identical input.
+> - **A folder of many PDFs converts even faster per document**, since one
+>   shared worker pool serves every file's pages at once (`--jobs N` in
+>   folder mode) — see [Usage](#usage) below.
 
 ## Features
 
@@ -75,9 +142,13 @@ A few things worth knowing about these numbers:
   not just a heading or a new table). Multi-column numeric progression
   tables are deliberately left as prose rather than guessed at, since
   getting that wrong would misrepresent the data.
-- **Contents block** — every output starts with a table of contents listing
-  every heading and the exact line number it starts on, so a long document
-  can be navigated without reading it end to end.
+- **Contents block with page tracking** — every output starts with a table
+  of contents listing every heading, the exact line number it starts on,
+  and the source PDF page it starts on, so a long document can be
+  navigated without reading it end to end. The body itself carries the
+  same page information throughout, via an invisible `<!-- page N -->`
+  marker before each page's content — any paragraph or table, not just
+  headings, can be traced back to its source page.
 - **Built-in memory** — every output's front matter records the source
   PDF's CRC32 checksum. Re-running the script on an unchanged PDF is an
   instant no-op instead of redoing the work; `--force` overrides this.
@@ -117,17 +188,19 @@ picked up immediately — no restart needed. The one exception: if
 skill you're adding, restart Claude Code once after creating it so it
 starts watching the new folder.
 
-To confirm it's there, just ask Claude directly — *"what skills are
-available?"* — or use the `/skills` command to browse everything installed.
+> [!TIP]
+> To confirm it's there, just ask Claude directly — *"what skills are
+> available?"* — or use the `/skills` command to browse everything
+> installed. Once installed, Claude uses it automatically when it looks
+> relevant (per the `description` in `SKILL.md`'s frontmatter) — you don't
+> need to invoke it by name, though asking to "convert this PDF to
+> Markdown" works too.
 
-Once installed, Claude uses it automatically when it looks relevant (per the
-`description` in `SKILL.md`'s frontmatter) — you don't need to invoke it by
-name, though asking to "convert this PDF to Markdown" works too.
-
-**Note for Cowork / cloud sessions:** these don't read `~/.claude/skills/`
-from your machine — only project skills committed to the repo (as above)
-or skills enabled for your claude.ai account carry over. If you only need
-this for your local CLI, the personal install above is all you need.
+> [!NOTE]
+> **Cowork / cloud sessions** don't read `~/.claude/skills/` from your
+> machine — only project skills committed to the repo (as above) or skills
+> enabled for your claude.ai account carry over. If you only need this for
+> your local CLI, the personal install above is all you need.
 
 ## Requirements
 
@@ -232,13 +305,17 @@ converted_at: 2026-07-29T21:33:03
 ---
 
 ## Contents
-- Model X200 (line 12)
-  - Specifications (line 24)
-  - Maintenance Schedule (line 28)
+- Model X200 (line 14, page 1)
+  - Specifications (line 26, page 2)
+  - Maintenance Schedule (line 30, page 3)
+
+<!-- page 1 -->
 
 # Model X200
 
 This is the reference manual for the Model X200 unit...
+
+<!-- page 2 -->
 
 **Manufacturer:** Acme Corp, Beta Industries
 ...
@@ -248,6 +325,10 @@ This is the reference manual for the Model X200 unit...
 | 1 | Worn drive belt or misaligned pulley. |
 ...
 ```
+
+The `<!-- page N -->` markers are HTML comments: invisible in a rendered
+preview, but there in the raw text so anything reading the file — a person
+or a model — can trace any piece of content back to its source PDF page.
 
 ## Limitations
 

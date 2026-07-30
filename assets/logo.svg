@@ -1,0 +1,42 @@
+<svg width="160" height="160" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="pdf-to-markdown logo">
+  <rect x="1" y="1" width="158" height="158" rx="28" fill="#1b2130" stroke="#2e3648" stroke-width="2"/>
+
+  <!-- Left page: dense, two-column PDF -->
+  <path d="M20,42 L54,42 L68,56 L68,118 L20,118 Z" fill="#f8fafc"/>
+  <path d="M54,42 L54,56 L68,56 Z" fill="#cbd5e1"/>
+  <g fill="#f59e0b">
+    <rect x="26" y="50" width="12" height="3" rx="1.2"/>
+    <rect x="26" y="58" width="15" height="3" rx="1.2"/>
+    <rect x="26" y="66" width="9" height="3" rx="1.2"/>
+    <rect x="26" y="74" width="14" height="3" rx="1.2"/>
+    <rect x="26" y="82" width="11" height="3" rx="1.2"/>
+    <rect x="26" y="90" width="13" height="3" rx="1.2"/>
+    <rect x="45" y="50" width="11" height="3" rx="1.2"/>
+    <rect x="45" y="58" width="13" height="3" rx="1.2"/>
+    <rect x="45" y="66" width="15" height="3" rx="1.2"/>
+    <rect x="45" y="74" width="9" height="3" rx="1.2"/>
+    <rect x="45" y="82" width="12" height="3" rx="1.2"/>
+    <rect x="45" y="90" width="10" height="3" rx="1.2"/>
+  </g>
+  <rect x="26" y="100" width="30" height="10" rx="1.5" fill="none" stroke="#cbd5e1" stroke-width="1.4"/>
+  <line x1="26" y1="105" x2="56" y2="105" stroke="#cbd5e1" stroke-width="1.2"/>
+  <line x1="41" y1="100" x2="41" y2="110" stroke="#cbd5e1" stroke-width="1.2"/>
+
+  <!-- Arrow: PDF becomes Markdown -->
+  <path d="M74,80 L86,80 M80,74 L86,80 L80,86" fill="none" stroke="#5eead4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Right page: clean, single-column Markdown -->
+  <path d="M92,42 L126,42 L140,56 L140,118 L92,118 Z" fill="#f8fafc"/>
+  <path d="M126,42 L126,56 L140,56 Z" fill="#cbd5e1"/>
+  <rect x="98" y="50" width="34" height="5" rx="1.5" fill="#1e293b"/>
+  <g fill="#2dd4bf">
+    <rect x="98" y="63" width="36" height="3" rx="1.2"/>
+    <rect x="98" y="71" width="30" height="3" rx="1.2"/>
+    <rect x="98" y="79" width="33" height="3" rx="1.2"/>
+  </g>
+  <rect x="98" y="90" width="36" height="5" rx="1.5" fill="#1e293b"/>
+  <g fill="#2dd4bf">
+    <rect x="98" y="103" width="27" height="3" rx="1.2"/>
+    <rect x="98" y="111" width="33" height="3" rx="1.2"/>
+  </g>
+</svg>
