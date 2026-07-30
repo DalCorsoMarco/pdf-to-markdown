@@ -28,8 +28,14 @@ by its own font size avoids inheriting one line's size for its neighbors.
 
 Every output file starts with a small YAML front-matter block recording the
 source PDF's path and CRC32 checksum, followed by a "Contents" table of
-contents that lists every heading with the line number it starts on. Two
-things fall out of that:
+contents that lists every heading with the line number it starts on and,
+right after it, the source PDF page it starts on (e.g. "(line 42, page
+7)"). The body itself also carries an invisible `<!-- page N -->` marker
+before each PDF page's content, so *any* piece of information -- not just
+headings -- can be traced back to its source page by scanning up to the
+nearest marker; it's an HTML comment, so it doesn't clutter a rendered
+preview but is still there in the raw text. Two things fall out of the
+front matter + Contents block specifically:
 
   - Re-running the script on a PDF that hasn't changed is a no-op: it
     recomputes the CRC32 (cheap), sees it matches what's recorded in the
@@ -160,6 +166,12 @@ def looks_like_new_content(text):
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 FRONT_MATTER_CRC_RE = re.compile(r"^source_crc32:\s*([0-9a-fA-F]+)\s*$", re.MULTILINE)
+
+# Marks which source PDF page the chunks right after it came from. An HTML
+# comment so it's invisible in a rendered preview but still greppable in the
+# raw text, and doesn't collide with HEADING_RE or any of the table/label
+# line patterns above.
+PAGE_MARKER_RE = re.compile(r"^<!-- page (\d+) -->$")
 
 # Label ends in a colon, on its own line, short enough to be a field name
 # rather than a full sentence that happens to contain a colon.
@@ -670,6 +682,23 @@ def read_existing_crc32(md_path):
     return m.group(1) if m else None
 
 
+def _add_page_markers(per_page_chunks):
+    """per_page_chunks: list of lists, one per source PDF page, in page
+    order. Interleaves a `<!-- page N -->` marker before each page's first
+    chunk, so page provenance survives into the flattened body text -- not
+    just for headings picked up below, but for any paragraph or table row:
+    scanning back from it to the nearest marker gives its source page.
+    Pages with no extracted content (extraction/OCR came up empty) get no
+    marker, since there's nothing on that page to attribute."""
+    doc_out = []
+    for page_num, chunks in enumerate(per_page_chunks, start=1):
+        if not chunks:
+            continue
+        doc_out.append(f"<!-- page {page_num} -->")
+        doc_out.extend(chunks)
+    return doc_out
+
+
 def build_document(doc_out, pdf_path, crc32):
     """Assemble front matter + a line-numbered Contents block + the body."""
     front_matter = (
@@ -680,12 +709,16 @@ def build_document(doc_out, pdf_path, crc32):
         "---"
     )
 
-    headings = []  # (level, text, line_within_body)
+    headings = []  # (level, text, line_within_body, page)
     line_no = 1
+    current_page = None
     for chunk in doc_out:
+        page_match = PAGE_MARKER_RE.match(chunk)
+        if page_match:
+            current_page = int(page_match.group(1))
         m = HEADING_RE.match(chunk)
         if m:
-            headings.append((len(m.group(1)), m.group(2), line_no))
+            headings.append((len(m.group(1)), m.group(2), line_no, current_page))
         line_no += chunk.count("\n") + 1 + 1  # chunk's own lines + trailing blank separator
 
     body_text = "\n\n".join(doc_out)
@@ -703,9 +736,10 @@ def build_document(doc_out, pdf_path, crc32):
     offset = front_matter_line_count + 1 + toc_line_count + 1
 
     toc_lines = ["## Contents"]
-    for level, text, pos in headings:
+    for level, text, pos, page in headings:
         indent = "  " * (level - 1)
-        toc_lines.append(f"{indent}- {text} (line {pos + offset})")
+        page_part = f", page {page}" if page is not None else ""
+        toc_lines.append(f"{indent}- {text} (line {pos + offset}{page_part})")
     toc_text = "\n".join(toc_lines)
 
     return front_matter + "\n\n" + toc_text + "\n\n" + body_text + "\n"
@@ -757,9 +791,7 @@ def convert(pdf_path, out_path=None, force=False, jobs=1, use_ocr=True):
             for lines, width in page_data
         ]
 
-    doc_out = []
-    for chunks in per_page_chunks:
-        doc_out.extend(chunks)
+    doc_out = _add_page_markers(per_page_chunks)
 
     _write_markdown(doc_out, pdf_path, crc32, out_path)
     return out_path, True
@@ -821,9 +853,7 @@ def _convert_folder_shared_pool(tasks, force, jobs, use_ocr):
         chunks_by_file = _convert_all_parallel_multi(ex, page_data_by_file, stats_by_file)
 
     for pdf_path, out_path, crc32, _ in pending:
-        doc_out = []
-        for chunk in chunks_by_file[pdf_path]:
-            doc_out.extend(chunk)
+        doc_out = _add_page_markers(chunks_by_file[pdf_path])
         try:
             _write_markdown(doc_out, pdf_path, crc32, out_path)
             print(f"Wrote: {out_path}")
