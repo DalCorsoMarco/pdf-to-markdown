@@ -1,0 +1,13 @@
+{
+  "name": "pdf-to-markdown-repo",
+  "owner": {
+    "name": "Marco Dal Corso"
+  },
+  "plugins": [
+    {
+      "name": "pdf-to-markdown",
+      "source": "./",
+      "description": "Convert visually rich, multi-column PDFs into clean Markdown, deterministically -- zero model calls in the conversion path."
+    }
+  ]
+}

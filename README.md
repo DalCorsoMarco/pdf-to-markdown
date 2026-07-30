@@ -165,8 +165,26 @@ every page converts faster than this.
 ## Installing this skill in Claude Code
 
 This repo *is* the skill — Claude Code discovers a skill by finding a
-`SKILL.md` at the top of a folder in one of a few specific locations. Put
-this whole `pdf-to-markdown/` folder in one of them:
+`SKILL.md` at the top of a folder in one of a few specific locations.
+There are two ways to install it:
+
+### Option A: plugin marketplace (recommended)
+
+This repo doubles as its own single-plugin marketplace, via
+`.claude-plugin/marketplace.json`:
+
+```
+/plugin marketplace add DalCorsoMarco/pdf-to-markdown
+/plugin install pdf-to-markdown@pdf-to-markdown-repo
+```
+
+Run both from inside Claude Code. Update later with
+`/plugin marketplace update pdf-to-markdown-repo`.
+
+### Option B: manual clone
+
+Put this whole `pdf-to-markdown/` folder in one of these locations
+yourself:
 
 | Scope | Location | Available in |
 |---|---|---|

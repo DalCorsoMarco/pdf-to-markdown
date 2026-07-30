@@ -1,0 +1,10 @@
+{
+  "name": "pdf-to-markdown",
+  "description": "Convert visually rich, multi-column PDFs into clean Markdown, deterministically -- zero model calls in the conversion path.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Marco Dal Corso"
+  },
+  "homepage": "https://github.com/DalCorsoMarco/pdf-to-markdown",
+  "license": "Apache-2.0"
+}
