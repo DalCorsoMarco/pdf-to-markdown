@@ -35,6 +35,16 @@ Python tool** — no model/LLM involved in the conversion itself. Point it at
 a PDF, get real Markdown back: headings, tables, and reading order intact,
 for the cost of running Python, not tokens.
 
+This approach has since grown into a family of sibling skills, each
+applying the same zero-token, deterministic conversion to a different
+office format:
+[`pptx-to-markdown`](https://github.com/DalCorsoMarco/pptx-to-markdown)
+for PowerPoint,
+[`docx-to-markdown`](https://github.com/DalCorsoMarco/docx-to-markdown)
+for Word, and
+[`xlsx-to-markdown`](https://github.com/DalCorsoMarco/xlsx-to-markdown)
+for Excel.
+
 ## Why this exists
 
 Hand an LLM a PDF and, under the hood, every page usually gets rendered as
